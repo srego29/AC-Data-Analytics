@@ -1,38 +1,53 @@
-from __future__ import annotations
+# Módulos del sistema y utlilidades
 
-import os
-import csv
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-from matplotlib.animation import FuncAnimation
-from matplotlib.ticker import AutoMinorLocator
+from __future__ import annotations # Usar una clase que no esta definida en las anotaciones de tipo
+
+import os # Permite interactuar con el sistema operativo (rutas, archivos, variable entorno)
+import sys # Acceso a funcionalidades del intérprete de Python
+import argparse # Crea interfaces de línea de comandos y parsear argumentos
+import csv # Leer y escribir archivos CSV (formato de datos sacados por acti)
+
+# Análisis de datos
+
+import pandas as pd # Biblioteca principal para análisis de datos. Facilita la carga, filtrado, agrupación y cálculo 
+# de estadísticas sobre los datos de telemetría.
+
+# Visualización
+
+import matplotlib.pyplot as plt # Biblioteca principal para crear gráficos y visualizaciones
+from matplotlib.gridspec import GridSpec # Crea layouts complejos de subplots dentro de una figura
+from matplotlib.animation import FuncAnimation # Se usa para crear animaciones, actualizandolas en tiempo real
+from matplotlib.ticker import AutoMinorLocator # Añade divisiones menores automáticas a los ejes, mejorando la legibilidad
+from matplotlib.collections import LineCollection # Permite dibujar multiples líneas con diferentes colores y estilos
+from matplotlib.colors import Normalize # Normaliza valores para mapearlos a una escala de colores
+from matplotlib import cm # Define mapas de color para visualizar datos
 
 
-DATA_FILES = ["data1.csv", "data2.csv"]  # añade aquí tus archivos a comparar
-ENABLE_ANIMATION = False  # Pon a True si quieres la animación automática además del hover
-TRACK_ZOOM_HALF_M = 25.0  # mitad de la ventana de zoom en el mapa (metros) al seguir el punto de data1
+DATA_FILES = ["data1.csv", "data2.csv"]  # Guarda en una variable la lista de archivos CSV a comparar
+ENABLE_ANIMATION = False  # Animacion automatica de la vuelta en el mapa
+TRACK_ZOOM_HALF_M = 25.0  # Zoom al punto que amos a aseguir en mapa para comparar datos
+DEFAULT_X_AXIS = "time"  # En el plot de las graficas, la x puede ser tiempo ("time") o distancia ("distance")
 
 
-def format_lap_time(seconds: float) -> str:
-    mins = int(seconds // 60)
-    secs = seconds % 60
-    return f"{mins}:{secs:05.2f}"
+def format_lap_time(seconds: float) -> str: # Función para pasar el dato de segundos a formato m:ss.ss
+    mins = int(seconds // 60) # Valor entero de minutos
+    secs = seconds % 60 # Resto en segundos
+    return f"{mins}:{secs:05.2f}" # Return formateado, y cambio a string
 
 
-def load_dataframe(path: str) -> pd.DataFrame:
-    """Carga el CSV de ACT con nombres/unidades leyendo encabezados en líneas 15 y 16."""
-    with open(path, newline='', encoding='utf-8') as f:
+def load_dataframe(path: str) -> pd.DataFrame: # Lee un archivo CSV de telemetria, se estpera que sea str y devuelve un DataFrame de pandas
+    with open(path, newline='', encoding='utf-8') as f: # Abre un archivo "path" en modo lectura
         reader = csv.reader(f)
-        for _ in range(14):
+        for _ in range(14): # Se salta las 14 lines del csv, cabecera y metadatos
             next(reader)
-        names = next(reader)
-        _units = next(reader)
+        names = next(reader) # La 15ª línea son los nombres de las columnas
+        _units = next(reader) # La 16ª línea son las unidades (no se usan)
 
-    df = pd.read_csv(path, skiprows=16, names=names)
-    df.columns = [c.strip('"') for c in df.columns]
-    # Convertimos columnas numéricas cuando sea posible
-    df = df.apply(pd.to_numeric, errors='ignore')
+    df = pd.read_csv(path, skiprows=16, names=names) # Lee el CSV con pandas, saltando las 16 primeras líneas y usando los nombres de columnas
+    df.columns = [c.strip('"') for c in df.columns] # Limpia los nombres de columnas de comillas, porque puede dar problemas
+    obj_cols = df.select_dtypes(include=['object']).columns
+    if len(obj_cols) > 0:
+        df[obj_cols] = df[obj_cols].apply(lambda s: pd.to_numeric(s, errors='coerce'))
     return df
 
 
@@ -127,7 +142,7 @@ def compute_sector_times(lap_data: pd.DataFrame, lap_time: float) -> list[float]
     return sectors
 
 
-def build_comparison_figure(datasets: list[dict]):
+def build_comparison_figure(datasets: list[dict], x_mode: str = "time"):
     """Crea la figura comparando múltiples datasets (1..N)."""
     plt.style.use('seaborn-v0_8')
 
@@ -172,7 +187,9 @@ def build_comparison_figure(datasets: list[dict]):
     ax_track.set_title('Traza vuelta rápida')
     ax_track.set_xlabel('Coord X')
     ax_track.set_ylabel('Coord Y')
-    ax_track.axis('equal')
+    # Preserve true track proportions without conflicting with limits/zoom.
+    # adjustable='box' avoids the Matplotlib warning and keeps aspect ratio.
+    ax_track.set_aspect('equal', adjustable='box')
 
     # Dibujar datasets
     for idx, d in enumerate(datasets):
@@ -180,34 +197,41 @@ def build_comparison_figure(datasets: list[dict]):
         label = d['label']
         throttle = d['throttle']
         brake = d['brake']
+        # Eje X elegido
+        if x_mode == 'distance':
+            xvals = d['s']
+        else:
+            xvals = lap_data['Lap Time (s)']
 
-        # Colores por dataset: data1 colores "normales", data2 en blanco
+        # Colores por dataset: dos líneas de un color cada una (mapa)
         if idx == 0:
-            c_track = 'tab:blue'      # mapa en azul
+            c_track = 'tab:cyan'      # mapa en cian (cambiado)
             c_speed = 'tab:purple'    # velocidad morado
             c_thr = 'tab:green'       # acelerador verde
             c_brk = 'tab:red'         # freno rojo
         else:
-            c_track = 'white'
+            c_track = 'tab:orange'    # segunda línea en naranja
             c_speed = 'white'
             c_thr = 'white'
             c_brk = 'white'
 
         z = 5 if idx == 0 else 3  # data1 por encima
-    # Track
+        # Track: dibujar siempre como línea simple por dataset (sin coloreado por ventaja)
         ax_track.plot(lap_data['Car Coord X'], lap_data['Car Coord Y'], color=c_track, alpha=0.95, linewidth=1.0, label=label, zorder=z)
-    # Speed
-        ax_speed.plot(lap_data['Lap Time (s)'], lap_data['Ground Speed'], color=c_speed, linewidth=0.9, label=f"Velocidad — {label}", zorder=z)
-    # Throttle / Brake
-        ax_throttle.plot(lap_data['Lap Time (s)'], throttle, color=c_thr, linewidth=0.8, label=f"Acel — {label}", zorder=z)
-        ax_brake.plot(lap_data['Lap Time (s)'], brake, color=c_brk, linewidth=0.8, label=f"Freno — {label}", zorder=z)
+        # Speed / Throttle / Brake
+        ax_speed.plot(xvals, lap_data['Ground Speed'], color=c_speed, linewidth=0.9, label=f"Velocidad — {label}", zorder=z)
+        ax_throttle.plot(xvals, throttle, color=c_thr, linewidth=0.8, label=f"Acel — {label}", zorder=z)
+        ax_brake.plot(xvals, brake, color=c_brk, linewidth=0.8, label=f"Freno — {label}", zorder=z)
+
+    # Leyenda del mapa (las líneas ya llevan label)
+    ax_track.legend(loc='upper right')
 
     # Estética y leyendas
     ax_speed.set_title('Velocidad', color='#DDDDDD')
     ax_speed.set_ylabel('km/h')
     ax_throttle.set_ylabel('Acelerador (%)')
     ax_brake.set_ylabel('Freno (%)')
-    ax_brake.set_xlabel('Tiempo dentro de la vuelta (s)')
+    ax_brake.set_xlabel('Distancia dentro de la vuelta (m)' if x_mode == 'distance' else 'Tiempo dentro de la vuelta (s)')
     ax_throttle.set_ylim(-5, 105)
     ax_brake.set_ylim(-5, 105)
 
@@ -246,19 +270,6 @@ def build_comparison_figure(datasets: list[dict]):
                      family='monospace', color=color,
                      bbox=dict(boxstyle='round', facecolor='#111111', edgecolor='#555555'))
 
-    # Vuelta teórica combinada (mejores sectores de todos los datasets)
-    all_sectors = [d['sectors'] for d in datasets if d.get('sectors') and len(d['sectors']) == 3]
-    if len(all_sectors) >= 1:
-        import numpy as np
-        # Matriz N x 3
-        arr = np.array(all_sectors)
-        best = arr.min(axis=0)
-        theo = best.sum()
-        ax_info.text(0.02, 0.32, f"vuelta teorica: {format_lap_time(float(theo))}",
-                     transform=ax_info.transAxes, va='top', ha='left', fontsize=12,
-                     family='monospace', color='#DDDDDD',
-                     bbox=dict(boxstyle='round', facecolor='#111111', edgecolor='#555555'))
-
     # Cursores compartidos
     vline_speed = ax_speed.axvline(0, color='#AAAAAA', alpha=0.8, linestyle='--')
     vline_thr = ax_throttle.axvline(0, color='#AAAAAA', alpha=0.8, linestyle='--')
@@ -289,12 +300,13 @@ def build_comparison_figure(datasets: list[dict]):
         brk_markers.append(mb)
 
     fig._axes = (ax_track, ax_info, ax_speed, ax_throttle, ax_brake)  # evitar GC de referencias
+    fig._x_mode = x_mode
     fig._cursors = (vline_speed, vline_thr, vline_brk)
     fig._artists = (track_points, track_paths, speed_markers, thr_markers, brk_markers)
     return fig
 
 
-def animate_lap_multi(fig, datasets: list[dict]):
+def animate_lap_multi(fig, datasets: list[dict], x_mode: str = "time"):
     # Anima siguiendo el primer dataset como referencia temporal
     from numpy import asarray
 
@@ -303,53 +315,59 @@ def animate_lap_multi(fig, datasets: list[dict]):
     track_points, track_paths, speed_markers, thr_markers, brk_markers = fig._artists
 
     t_list = [d['lap_data']['Lap Time (s)'].to_numpy() for d in datasets]
+    s_list = [d['s'] for d in datasets]
     x_list = [d['lap_data']['Car Coord X'].to_numpy() for d in datasets]
     y_list = [d['lap_data']['Car Coord Y'].to_numpy() for d in datasets]
     speed_list = [d['lap_data']['Ground Speed'].to_numpy() for d in datasets]
     thr_list = [d['throttle'].to_numpy() for d in datasets]
     brk_list = [d['brake'].to_numpy() for d in datasets]
 
-    tref = t_list[0]
-    ax_speed.set_xlim(tref.min(), max(t[-1] for t in t_list))
+    if x_mode == 'distance':
+        xref = s_list[0]
+        ax_speed.set_xlim(xref.min(), max(s[-1] for s in s_list))
+    else:
+        xref = t_list[0]
+        ax_speed.set_xlim(xref.min(), max(t[-1] for t in t_list))
 
     # Intervalo
-    if len(tref) > 1:
-        dt_avg = max((tref[-1] - tref[0]) / (len(tref) - 1), 1/120)
+    if len(xref) > 1:
+        dx_avg = max((xref[-1] - xref[0]) / (len(xref) - 1), 1/120)
     else:
-        dt_avg = 0.03
-    interval_ms = int(max(10, min(1000 * dt_avg, 1000 / 30)))
+        dx_avg = 0.03
+    interval_ms = int(max(10, min(1000 * dx_avg, 1000 / 30)))
 
     import numpy as np
 
-    def idx_for_time(tarr, t):
-        i = int(np.searchsorted(tarr, t))
+    def idx_for_axis(arr, x):
+        i = int(np.searchsorted(arr, x))
         if i <= 0:
             return 0
-        if i >= len(tarr):
-            return len(tarr) - 1
+        if i >= len(arr):
+            return len(arr) - 1
         return i
 
     def update(i):
-        ti = tref[i]
+        xi = xref[i]
         for v in (vline_speed, vline_thr, vline_brk):
-            v.set_xdata([ti, ti])
+            v.set_xdata([xi, xi])
         for k in range(len(datasets)):
-            tk = t_list[k]
-            ik = idx_for_time(tk, ti)
+            arr = s_list[k] if x_mode == 'distance' else t_list[k]
+            ik = idx_for_axis(arr, xi)
             # track
             track_points[k].set_data([x_list[k][ik]], [y_list[k][ik]])
             track_paths[k].set_data(x_list[k][:ik + 1], y_list[k][:ik + 1])
             # markers
-            speed_markers[k].set_data([tk[ik]], [speed_list[k][ik]])
-            thr_markers[k].set_data([tk[ik]], [thr_list[k][ik]])
-            brk_markers[k].set_data([tk[ik]], [brk_list[k][ik]])
+            xv = arr[ik]
+            speed_markers[k].set_data([xv], [speed_list[k][ik]])
+            thr_markers[k].set_data([xv], [thr_list[k][ik]])
+            brk_markers[k].set_data([xv], [brk_list[k][ik]])
         return (*track_points, *track_paths, *speed_markers, *thr_markers, *brk_markers)
 
-    ani = FuncAnimation(fig, update, frames=len(tref), interval=interval_ms, blit=False, repeat=False)
+    ani = FuncAnimation(fig, update, frames=len(xref), interval=interval_ms, blit=False, repeat=False)
     return ani
 
 
-def enable_hover_interaction_multi(fig, datasets: list[dict]):
+def enable_hover_interaction_multi(fig, datasets: list[dict], x_mode: str = "time"):
     """Hover: al mover el ratón por las gráficas, sincroniza cursores/markers y puntos del track en todos los datasets."""
     import numpy as np
 
@@ -359,8 +377,9 @@ def enable_hover_interaction_multi(fig, datasets: list[dict]):
 
     axes_set = {ax_speed, ax_thr, ax_brk}
 
-    # Prepara arrays por dataset
+    # Prepara arrays por dataset (usar eje elegido para sincronizar)
     t_list = [d['lap_data']['Lap Time (s)'].to_numpy() for d in datasets]
+    s_list = [d['s'] for d in datasets]
     x_list = [d['lap_data']['Car Coord X'].to_numpy() for d in datasets]
     y_list = [d['lap_data']['Car Coord Y'].to_numpy() for d in datasets]
     speed_list = [d['lap_data']['Ground Speed'].to_numpy() for d in datasets]
@@ -386,53 +405,63 @@ def enable_hover_interaction_multi(fig, datasets: list[dict]):
                               fontsize=10, color='tab:blue', family='monospace',
                               bbox=dict(boxstyle='round', facecolor='#111111', edgecolor='#555555', alpha=0.8))
 
-    def idx_for_time(tarr, t):
-        i = int(np.searchsorted(tarr, t))
+    # (Eliminado) Texto de diferencia de velocidad: ya no se muestra
+
+    def idx_for_axis(arr, x):
+        i = int(np.searchsorted(arr, x))
         if i <= 0:
             return 0
-        if i >= len(tarr):
-            return len(tarr) - 1
+        if i >= len(arr):
+            return len(arr) - 1
         return i
 
     def on_move(event):
         if event.inaxes not in axes_set or event.xdata is None:
             return
-        ti = event.xdata
+        xi = event.xdata  # valor en eje X (tiempo o distancia)
         # Cursores
         for v in (vline_speed, vline_thr, vline_brk):
-            v.set_xdata([ti, ti])
+            v.set_xdata([xi, xi])
 
         # Por dataset
         for k, d in enumerate(datasets):
-            tk = t_list[k]
-            ik = idx_for_time(tk, ti)
+            arr = s_list[k] if x_mode == 'distance' else t_list[k]
+            ik = idx_for_axis(arr, xi)
             # Puntos en el track y rastro
             track_points[k].set_data([x_list[k][ik]], [y_list[k][ik]])
             track_paths[k].set_data(x_list[k][:ik + 1], y_list[k][:ik + 1])
             # Markers en subplots
-            speed_markers[k].set_data([tk[ik]], [speed_list[k][ik]])
-            thr_markers[k].set_data([tk[ik]], [thr_list[k][ik]])
-            brk_markers[k].set_data([tk[ik]], [brk_list[k][ik]])
+            xv = arr[ik]
+            speed_markers[k].set_data([xv], [speed_list[k][ik]])
+            thr_markers[k].set_data([xv], [thr_list[k][ik]])
+            brk_markers[k].set_data([xv], [brk_list[k][ik]])
             # Texto
+            if x_mode == 'distance':
+                xinfo = f"s={float(arr[ik]):6.1f} m"
+            else:
+                xinfo = f"t={float(arr[ik]):6.2f} s"
             hover_texts[k].set_text(
-                f"{d['label']}  t={tk[ik]:6.2f} s  v={speed_list[k][ik]:6.1f} km/h  "
+                f"{d['label']}  {xinfo}  v={speed_list[k][ik]:6.1f} km/h  "
                 f"thr={thr_list[k][ik]:3.0f}%  brk={brk_list[k][ik]:3.0f}%"
             )
 
         # Zoom agresivo centrado en el punto de data1
         if datasets:
             # índice correspondiente en data1
-            tk0 = t_list[0]
-            ik0 = idx_for_time(tk0, ti)
+            arr0 = s_list[0] if x_mode == 'distance' else t_list[0]
+            ik0 = idx_for_axis(arr0, xi)
             x0 = x_list[0][ik0]
             y0p = y_list[0][ik0]
             hw = TRACK_ZOOM_HALF_M
             ax_track.set_xlim(x0 - hw, x0 + hw)
             ax_track.set_ylim(y0p - hw, y0p + hw)
             # Mostrar distancia acumulada de data1 (m)
-            if 's' in datasets[0]:
+            if x_mode == 'distance' and 's' in datasets[0]:
                 s0 = datasets[0]['s']
-                dist_text.set_text(f"s = {float(s0[ik0]):.1f} m")
+                if x_mode == 'distance':
+                    dist_text.set_text(f"s = {float(s0[ik0]):.1f} m")
+                else:
+                    dist_text.set_text(f"t = {float(arr0[ik0]):.2f} s")
 
         fig.canvas.draw_idle()
 
@@ -478,14 +507,40 @@ def main():
     if not datasets:
         raise SystemExit("No se encontró ningún archivo válido en DATA_FILES.")
 
-    fig = build_comparison_figure(datasets)
-    enable_hover_interaction_multi(fig, datasets)
+    # Elegir eje X por CLI o prompt
+    x_mode = get_x_axis_mode()
+
+    fig = build_comparison_figure(datasets, x_mode=x_mode)
+    enable_hover_interaction_multi(fig, datasets, x_mode=x_mode)
 
     if ENABLE_ANIMATION:
-        ani = animate_lap_multi(fig, datasets)
+        ani = animate_lap_multi(fig, datasets, x_mode=x_mode)
         fig._ani = ani
 
+    # Final confirmation for the terminal so the operator knows everything
+    # converted and the plot is about to be displayed.
+    print("Plot ready and displaying – all conversions successful")
     plt.show()
+
+
+def get_x_axis_mode() -> str:
+    parser = argparse.ArgumentParser(description="ACTelemetry - comparador de vueltas")
+    parser.add_argument("--x-axis", "-x", dest="xaxis", choices=["time", "distance", "tiempo", "metros", "t", "m"], default=None,
+                        help="Elegir el eje X: 'time' o 'distance' (alias: t/tiempo, m/metros)")
+    args, _ = parser.parse_known_args()
+    choice = args.xaxis
+    if choice is None:
+        try:
+            raw = input("Elige eje X [t=tiempo / m=metros] (por defecto: tiempo): ").strip().lower()
+        except Exception:
+            raw = ""
+        if raw in ("m", "metros", "distance", "dist", "d"):
+            return "distance"
+        return DEFAULT_X_AXIS
+    # normalizar
+    if choice in ("m", "metros", "distance"):
+        return "distance"
+    return "time"
 
 
 if __name__ == "__main__":
